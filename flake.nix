@@ -6,7 +6,7 @@
   };
 
   outputs =
-    { nixpkgs }:
+    { self, nixpkgs }:
     let
       forAllSystems = nixpkgs.lib.genAttrs [
         "aarch64-darwin"
@@ -16,6 +16,11 @@
       ];
     in
     {
+      overlays.default = final: _prev: {
+        clog = self.packages.${final.system}.clog;
+        clog-ollama = self.packages.${final.system}.clog-ollama;
+      };
+
       packages = forAllSystems (
         system:
         let
