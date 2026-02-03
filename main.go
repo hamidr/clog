@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -24,6 +25,10 @@ func main() {
 	searchLong := flag.String("search", "", "semantic search query")
 	text := flag.String("t", "", "")
 	textLong := flag.String("text-search", "", "case-insensitive text search pattern")
+	commands := flag.String("c", "", "")
+	commandsLong := flag.String("commands", "", "search tool call events by tool name")
+	verbose := flag.Bool("v", false, "")
+	verboseLong := flag.Bool("verbose", false, "show tool responses (use with -c)")
 	n := flag.Int("n", 0, "max results or messages")
 
 	flag.Usage = func() {
@@ -36,6 +41,8 @@ options:
   -e, --embed                embed unembedded messages
   -s, --search QUERY         semantic search over embeddings
   -t, --text-search PATTERN  case-insensitive substring search
+  -c, --commands PATTERN     search tool call events (use "*" for all)
+  -v, --verbose              show tool responses (use with -c)
   -n NUM                     max results/messages (default: varies per mode)
 
 environment:
@@ -61,6 +68,12 @@ environment:
 	if *textLong != "" {
 		*text = *textLong
 	}
+	if *commandsLong != "" {
+		*commands = *commandsLong
+	}
+	if *verboseLong {
+		*verbose = true
+	}
 
 	mode := 0
 	if *ingest {
@@ -75,13 +88,16 @@ environment:
 	if *text != "" {
 		mode++
 	}
+	if *commands != "" {
+		mode++
+	}
 
 	if mode == 0 {
 		flag.Usage()
 		os.Exit(2)
 	}
 	if mode > 1 {
-		fmt.Fprintln(os.Stderr, "clog: specify only one of -i, -e, -s, -t")
+		fmt.Fprintln(os.Stderr, "clog: specify only one of -i, -e, -s, -t, -c")
 		os.Exit(2)
 	}
 
@@ -107,6 +123,11 @@ environment:
 			*n = 20
 		}
 		err = runTextSearch(*text, *n)
+	case *commands != "":
+		if *n == 0 {
+			*n = 20
+		}
+		err = runToolSearch(*commands, *n, *verbose)
 	}
 
 	if err != nil {
@@ -298,6 +319,94 @@ func runTextSearch(pattern string, limit int) error {
 
 	printResults(results)
 	return nil
+}
+
+// --- Tool search mode ---
+
+func runToolSearch(pattern string, limit int, verbose bool) error {
+	st, err := openCurrentProjectStore()
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	results, err := st.ToolSearch(pattern, limit)
+	if err != nil {
+		return fmt.Errorf("tool search: %w", err)
+	}
+
+	if len(results) == 0 {
+		fmt.Println("No tool call events found.")
+		return nil
+	}
+
+	for i, r := range results {
+		sessionPrefix := r.SessionID
+		if len(sessionPrefix) > 8 {
+			sessionPrefix = sessionPrefix[:8]
+		}
+		fmt.Printf("[%d] %s  %s  session=%s\n",
+			i+1, r.Timestamp.Format("2006-01-02 15:04"), r.ToolName, sessionPrefix)
+		fmt.Printf("    %s\n", formatToolInput(r.ToolName, r.ToolInput))
+		if verbose && r.ToolResponse != "" {
+			fmt.Printf("    → %s\n", truncate(r.ToolResponse, 200))
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
+// formatToolInput extracts the most useful field from the tool_input JSON
+// depending on which tool was called.
+func formatToolInput(toolName, rawInput string) string {
+	if rawInput == "" {
+		return "(no input)"
+	}
+
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(rawInput), &m); err != nil {
+		return truncate(rawInput, 120)
+	}
+
+	var key string
+	switch toolName {
+	case "Bash":
+		key = "command"
+	case "Read":
+		key = "file_path"
+	case "Edit":
+		key = "file_path"
+	case "Write":
+		key = "file_path"
+	case "Glob":
+		key = "pattern"
+	case "Grep":
+		key = "pattern"
+	case "WebFetch":
+		key = "url"
+	case "WebSearch":
+		key = "query"
+	case "Task":
+		key = "prompt"
+	}
+
+	if key != "" {
+		if v, ok := m[key]; ok {
+			var s string
+			if err := json.Unmarshal(v, &s); err == nil {
+				return truncate(s, 120)
+			}
+		}
+	}
+
+	return truncate(rawInput, 120)
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 // --- Helpers ---

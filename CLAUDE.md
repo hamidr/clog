@@ -36,6 +36,11 @@ clog --search "query" -n 5
 # Text search (case-insensitive substring, no embeddings needed)
 clog -t "pattern"
 clog --text-search "pattern" -n 10
+
+# Search tool call events (requires PostToolUse hook)
+clog -c "bash"
+clog --commands "*" -n 10
+clog -c "bash" -v              # include tool responses
 ```
 
 There are no tests in the codebase currently.

@@ -88,6 +88,15 @@ type SearchResult struct {
 	Timestamp time.Time
 }
 
+// ToolResult represents a tool call event from the events table.
+type ToolResult struct {
+	SessionID    string
+	ToolName     string
+	ToolInput    string // raw JSON
+	ToolResponse string // raw JSON
+	Timestamp    time.Time
+}
+
 // HarvestResult holds parsed messages and the new file read offset.
 type HarvestResult struct {
 	Messages  []Message

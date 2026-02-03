@@ -27,11 +27,14 @@ clog -i                          # ingest a hook event from stdin
 clog -e [-n NUM]                 # embed unembedded messages
 clog -s [-n NUM] "query"         # semantic search (requires embeddings)
 clog -t [-n NUM] "pattern"       # case-insensitive text search
+clog -c [-n NUM] "pattern"       # search tool call events ("*" for all)
+clog -c "pattern" -v             # include tool responses in output
 
 clog --ingest                    # long forms
 clog --embed
 clog --search "query"
 clog --text-search "pattern"
+clog --commands "bash"
 ```
 
 ## Embedding providers
@@ -82,6 +85,16 @@ Register in your Claude Code hooks config (`~/.claude/settings.json`):
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "clog -i"
+          }
+        ]
+      }
     ]
   }
 }
@@ -109,6 +122,14 @@ Add the following to your global `~/.claude/CLAUDE.md` so Claude Code knows how 
   clog-ollama -s "natural language query" -n 5
   ```
   Embeds the query and finds similar messages via cosine similarity.
+
+- **Tool call search** (requires PostToolUse hook):
+  ```bash
+  clog-ollama -c "bash" -n 10        # search by tool name
+  clog-ollama -c "*" -n 10           # list all tool calls
+  clog-ollama -c "bash" -v           # include tool responses
+  ```
+  Search past tool calls (Bash commands, file reads, edits, etc.) from the events table.
 
 - Use `-n` to control how many results are returned (default varies by mode).
 

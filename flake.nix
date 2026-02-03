@@ -29,7 +29,7 @@
         rec {
           clog = pkgs.buildGoModule {
             pname = "clog";
-            version = "0.1.0";
+            version = "0.2.0";
             src = ./.;
             vendorHash = "sha256-ss40DUh/u76GpLisyIutcgFJd0LIEhSCdu/0nUkmpgo=";
           };

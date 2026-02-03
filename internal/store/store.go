@@ -259,6 +259,57 @@ func (s *Store) TextSearch(pattern string, limit int) ([]model.SearchResult, err
 	return out, rows.Err()
 }
 
+// --- Tool search ---
+
+// ToolSearch queries PostToolUse events, optionally filtered by tool name.
+func (s *Store) ToolSearch(toolName string, limit int) ([]model.ToolResult, error) {
+	var rows *sql.Rows
+	var err error
+
+	if toolName == "" || toolName == "*" {
+		rows, err = s.db.Query(`
+			SELECT session_id, tool_name, CAST(tool_input AS VARCHAR),
+			       CAST(tool_response AS VARCHAR), timestamp
+			FROM events
+			WHERE event_type = 'PostToolUse'
+			  AND tool_name IS NOT NULL
+			ORDER BY timestamp DESC
+			LIMIT ?
+		`, limit)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT session_id, tool_name, CAST(tool_input AS VARCHAR),
+			       CAST(tool_response AS VARCHAR), timestamp
+			FROM events
+			WHERE event_type = 'PostToolUse'
+			  AND tool_name ILIKE '%' || ? || '%'
+			ORDER BY timestamp DESC
+			LIMIT ?
+		`, toolName, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []model.ToolResult
+	for rows.Next() {
+		var r model.ToolResult
+		var toolInput, toolResponse sql.NullString
+		if err := rows.Scan(&r.SessionID, &r.ToolName, &toolInput, &toolResponse, &r.Timestamp); err != nil {
+			return nil, err
+		}
+		if toolInput.Valid {
+			r.ToolInput = toolInput.String
+		}
+		if toolResponse.Valid {
+			r.ToolResponse = toolResponse.String
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // --- helpers ---
 
 func nullStr(s string) interface{} {
