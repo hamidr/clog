@@ -53,15 +53,72 @@ Register in your Claude Code hooks config (`~/.claude/settings.json`):
 ```json
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "clog -i"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "clog -i"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
-        "type": "command",
-        "command": "clog -i"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "clog -i"
+          }
+        ]
       }
     ]
   }
 }
 ```
+
+Replace `clog` with `clog-ollama` if using the Ollama wrapper.
+
+## Teaching Claude Code to use clog
+
+Add the following to your global `~/.claude/CLAUDE.md` so Claude Code knows how to retrieve past conversations:
+
+````markdown
+## Retrieving previous conversations (clog)
+
+`clog-ollama` is installed as a Claude Code hook and logs all session transcripts to a DuckDB database. Use it to recall past conversations when context from previous sessions would be helpful.
+
+- **Text search** (no embeddings needed):
+  ```bash
+  clog-ollama -t "search pattern" -n 10
+  ```
+  Case-insensitive substring match across all harvested messages. Returns messages with timestamps, roles (`[user]`/`[assistant]`), and session IDs.
+
+- **Semantic search** (requires embeddings via `clog-ollama -e`):
+  ```bash
+  clog-ollama -s "natural language query" -n 5
+  ```
+  Embeds the query and finds similar messages via cosine similarity.
+
+- Use `-n` to control how many results are returned (default varies by mode).
+
+When to use:
+- The user references something from a past session ("remember when we...", "like we did before")
+- You need to find how a problem was previously solved
+- The user asks to search their conversation history
+````
+
+Replace `clog-ollama` with `clog` if not using the Ollama wrapper.
 
 ## Storage
 
