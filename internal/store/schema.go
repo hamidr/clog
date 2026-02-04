@@ -62,6 +62,13 @@ CREATE TABLE IF NOT EXISTS transcript_offsets (
     transcript_path  VARCHAR PRIMARY KEY,
     last_offset      BIGINT NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS session_summaries (
+    session_id    VARCHAR PRIMARY KEY,
+    summary       VARCHAR NOT NULL,
+    model         VARCHAR,
+    generated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `
 
 func embeddingSchema(dimension int) string {

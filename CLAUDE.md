@@ -42,7 +42,12 @@ clog -c "bash"
 clog --commands "*" -n 10
 clog -c "bash" -v              # include tool responses
 
-# Time-bounded search (works with -s, -t, -c)
+# List session summaries (generated on Stop events)
+clog --changelog
+clog --changelog --since 1w
+clog --changelog -n 5
+
+# Time-bounded search (works with -s, -t, -c, --changelog)
 clog -t "auth" --since 1d                              # last 24 hours
 clog -s "build errors" --since 1w                      # last week
 clog -c "bash" --since 2h                              # last 2 hours
@@ -62,6 +67,7 @@ There are no tests in the codebase currently.
 - `internal/store/` — DuckDB operations: schema init, session upsert, event insert, message persistence with atomic offset tracking, embedding storage, VSS-based similarity search, ILIKE text search
 - `internal/transcript/` — Incremental JSONL parser for Claude Code transcripts; extracts user/assistant messages only; tracks file offset for resumable harvesting
 - `internal/embedding/` — `Embedder` interface with `HTTPEmbedder` impl; supports Ollama (local), Voyage AI, and OpenAI; provider selected via env vars
+- `internal/summary/` — LLM chat completion client for session summaries; auto-detects Ollama or OpenAI from env vars
 
 ### Data flow
 
@@ -75,6 +81,11 @@ clog -i (stdin JSON) → ParsePayload → DuckDB (UpsertSession + InsertEvent)
                      clog -e → batch API calls → SaveEmbedding
                                      ↓
                      clog -s → embed query → SearchSimilar (VSS cosine)
+
+                             (on Stop, after harvest)
+                     summary.NewFromEnv → SessionMessages → Summarize → SaveSummary
+                                     ↓
+                     clog --changelog → ListSummaries (joined with sessions)
 ```
 
 ### Key design decisions
@@ -89,14 +100,15 @@ clog -i (stdin JSON) → ParsePayload → DuckDB (UpsertSession + InsertEvent)
 
 ### Ollama wrapper
 
-`clog-ollama.sh` (also the `clog-ollama` flake package) sets `OLLAMA_HOST` and `OLLAMA_EMBED_MODEL` defaults, then calls `clog`.
+`clog-ollama.sh` (also the `clog-ollama` flake package) sets `OLLAMA_HOST`, `OLLAMA_EMBED_MODEL`, and `OLLAMA_CHAT_MODEL` defaults, then calls `clog`.
 
 ## Environment Variables
 
 - `OLLAMA_EMBED_MODEL` — Ollama model name (checked first for embeddings)
+- `OLLAMA_CHAT_MODEL` — Ollama model for session summaries (e.g. `llama3.2`)
 - `OLLAMA_HOST` — Ollama address (required when using Ollama, usually `http://localhost:11434`)
 - `VOYAGE_API_KEY` — Voyage AI API key
-- `OPENAI_API_KEY` — OpenAI API key (fallback for embeddings)
+- `OPENAI_API_KEY` — OpenAI API key (fallback for embeddings and summaries)
 
 ## Storage
 

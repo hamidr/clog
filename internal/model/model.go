@@ -97,6 +97,15 @@ type ToolResult struct {
 	Timestamp    time.Time
 }
 
+// SummaryResult represents a session summary joined with session metadata.
+type SummaryResult struct {
+	SessionID   string
+	Summary     string
+	Model       string
+	GeneratedAt time.Time
+	CWD         string
+}
+
 // HarvestResult holds parsed messages and the new file read offset.
 type HarvestResult struct {
 	Messages  []Message

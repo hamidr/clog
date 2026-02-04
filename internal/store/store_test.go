@@ -754,6 +754,264 @@ func TestToolSearch_ShouldIncludeToolInputAndResponse(t *testing.T) {
 	}
 }
 
+// --- SessionMessages ---
+
+func TestSessionMessages_WhenMessagesExist_ShouldReturnInChronologicalOrder(t *testing.T) {
+	st := openTestStore(t)
+	st.UpsertSession(model.Session{ID: "sess-1", CWD: "/tmp", CreatedAt: time.Now()})
+
+	now := time.Now()
+	st.SaveHarvestedMessages([]model.Message{
+		{SessionID: "sess-1", UUID: "m1", Role: "user", Content: "first", Timestamp: now.Add(-2 * time.Hour)},
+		{SessionID: "sess-1", UUID: "m2", Role: "assistant", Content: "second", Timestamp: now.Add(-1 * time.Hour)},
+		{SessionID: "sess-1", UUID: "m3", Role: "user", Content: "third", Timestamp: now},
+	}, "/test.jsonl", 999)
+
+	messages, err := st.SessionMessages("sess-1", 10)
+	if err != nil {
+		t.Fatalf("session messages: %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(messages))
+	}
+	if messages[0].Content != "first" {
+		t.Errorf("expected first message first, got %q", messages[0].Content)
+	}
+	if messages[2].Content != "third" {
+		t.Errorf("expected third message last, got %q", messages[2].Content)
+	}
+}
+
+func TestSessionMessages_ShouldRespectLimit(t *testing.T) {
+	st := openTestStore(t)
+	st.UpsertSession(model.Session{ID: "sess-1", CWD: "/tmp", CreatedAt: time.Now()})
+
+	var msgs []model.Message
+	for i := 0; i < 10; i++ {
+		msgs = append(msgs, model.Message{
+			SessionID: "sess-1",
+			UUID:      fmt.Sprintf("m%d", i),
+			Role:      "user",
+			Content:   fmt.Sprintf("message %d", i),
+			Timestamp: time.Now().Add(time.Duration(i) * time.Minute),
+		})
+	}
+	st.SaveHarvestedMessages(msgs, "/test.jsonl", 999)
+
+	messages, err := st.SessionMessages("sess-1", 3)
+	if err != nil {
+		t.Fatalf("session messages: %v", err)
+	}
+	if len(messages) != 3 {
+		t.Errorf("expected 3 messages (limited), got %d", len(messages))
+	}
+}
+
+func TestSessionMessages_WhenNoMessages_ShouldReturnEmptySlice(t *testing.T) {
+	st := openTestStore(t)
+	st.UpsertSession(model.Session{ID: "sess-1", CWD: "/tmp", CreatedAt: time.Now()})
+
+	messages, err := st.SessionMessages("sess-1", 10)
+	if err != nil {
+		t.Fatalf("session messages: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Errorf("expected 0 messages, got %d", len(messages))
+	}
+}
+
+func TestSessionMessages_ShouldExcludeEmptyContent(t *testing.T) {
+	st := openTestStore(t)
+	st.UpsertSession(model.Session{ID: "sess-1", CWD: "/tmp", CreatedAt: time.Now()})
+
+	st.SaveHarvestedMessages([]model.Message{
+		{SessionID: "sess-1", UUID: "m1", Role: "user", Content: "has content", Timestamp: time.Now()},
+		{SessionID: "sess-1", UUID: "m2", Role: "assistant", Content: "", Timestamp: time.Now()},
+	}, "/test.jsonl", 999)
+
+	messages, err := st.SessionMessages("sess-1", 10)
+	if err != nil {
+		t.Fatalf("session messages: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Errorf("expected 1 message (excluding empty), got %d", len(messages))
+	}
+}
+
+func TestSessionMessages_ShouldOnlyReturnMessagesForRequestedSession(t *testing.T) {
+	st := openTestStore(t)
+	st.UpsertSession(model.Session{ID: "sess-1", CWD: "/tmp", CreatedAt: time.Now()})
+	st.UpsertSession(model.Session{ID: "sess-2", CWD: "/tmp", CreatedAt: time.Now()})
+
+	st.SaveHarvestedMessages([]model.Message{
+		{SessionID: "sess-1", UUID: "m1", Role: "user", Content: "session 1", Timestamp: time.Now()},
+		{SessionID: "sess-2", UUID: "m2", Role: "user", Content: "session 2", Timestamp: time.Now()},
+	}, "/test.jsonl", 999)
+
+	messages, err := st.SessionMessages("sess-1", 10)
+	if err != nil {
+		t.Fatalf("session messages: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Errorf("expected 1 message for sess-1, got %d", len(messages))
+	}
+}
+
+// --- SaveSummary / ListSummaries ---
+
+func TestSaveSummary_WhenNewSession_ShouldPersistSummary(t *testing.T) {
+	st := openTestStore(t)
+	st.UpsertSession(model.Session{ID: "sess-1", CWD: "/tmp/project", CreatedAt: time.Now()})
+
+	if err := st.SaveSummary("sess-1", "Added authentication to the app.", "llama3.2"); err != nil {
+		t.Fatalf("save summary: %v", err)
+	}
+
+	results, err := st.ListSummaries(10, nil)
+	if err != nil {
+		t.Fatalf("list summaries: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 summary, got %d", len(results))
+	}
+	if results[0].Summary != "Added authentication to the app." {
+		t.Errorf("expected summary text, got %q", results[0].Summary)
+	}
+	if results[0].Model != "llama3.2" {
+		t.Errorf("expected model 'llama3.2', got %q", results[0].Model)
+	}
+}
+
+func TestSaveSummary_WhenSameSessionUpdated_ShouldReplaceExistingSummary(t *testing.T) {
+	st := openTestStore(t)
+	st.UpsertSession(model.Session{ID: "sess-1", CWD: "/tmp/project", CreatedAt: time.Now()})
+
+	st.SaveSummary("sess-1", "First summary.", "model-a")
+	st.SaveSummary("sess-1", "Updated summary.", "model-b")
+
+	results, err := st.ListSummaries(10, nil)
+	if err != nil {
+		t.Fatalf("list summaries: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 summary (replaced, not duplicated), got %d", len(results))
+	}
+	if results[0].Summary != "Updated summary." {
+		t.Errorf("expected updated summary, got %q", results[0].Summary)
+	}
+	if results[0].Model != "model-b" {
+		t.Errorf("expected model 'model-b', got %q", results[0].Model)
+	}
+}
+
+func TestListSummaries_ShouldReturnMostRecentFirst(t *testing.T) {
+	st := openTestStore(t)
+	st.UpsertSession(model.Session{ID: "sess-1", CWD: "/tmp", CreatedAt: time.Now()})
+	st.UpsertSession(model.Session{ID: "sess-2", CWD: "/tmp", CreatedAt: time.Now()})
+
+	st.SaveSummary("sess-1", "Older session.", "m")
+	// Small sleep not needed because SaveSummary uses time.Now().UTC() each call,
+	// but force ordering by saving sess-2 after.
+	st.SaveSummary("sess-2", "Newer session.", "m")
+
+	results, err := st.ListSummaries(10, nil)
+	if err != nil {
+		t.Fatalf("list summaries: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 summaries, got %d", len(results))
+	}
+	if results[0].Summary != "Newer session." {
+		t.Errorf("expected newest first, got %q", results[0].Summary)
+	}
+}
+
+func TestListSummaries_ShouldRespectLimit(t *testing.T) {
+	st := openTestStore(t)
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("sess-%d", i)
+		st.UpsertSession(model.Session{ID: id, CWD: "/tmp", CreatedAt: time.Now()})
+		st.SaveSummary(id, fmt.Sprintf("Summary %d", i), "m")
+	}
+
+	results, err := st.ListSummaries(2, nil)
+	if err != nil {
+		t.Fatalf("list summaries: %v", err)
+	}
+	if len(results) != 2 {
+		t.Errorf("expected 2 summaries (limited), got %d", len(results))
+	}
+}
+
+func TestListSummaries_ShouldIncludeCWDFromSession(t *testing.T) {
+	st := openTestStore(t)
+	st.UpsertSession(model.Session{ID: "sess-1", CWD: "/home/user/myproject", CreatedAt: time.Now()})
+	st.SaveSummary("sess-1", "Did some work.", "m")
+
+	results, err := st.ListSummaries(10, nil)
+	if err != nil {
+		t.Fatalf("list summaries: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 summary, got %d", len(results))
+	}
+	if results[0].CWD != "/home/user/myproject" {
+		t.Errorf("expected CWD '/home/user/myproject', got %q", results[0].CWD)
+	}
+}
+
+func TestListSummaries_WhenNoSummaries_ShouldReturnEmptySlice(t *testing.T) {
+	st := openTestStore(t)
+
+	results, err := st.ListSummaries(10, nil)
+	if err != nil {
+		t.Fatalf("list summaries: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 summaries, got %d", len(results))
+	}
+}
+
+func TestListSummaries_WhenSinceFilterSet_ShouldExcludeOlderSummaries(t *testing.T) {
+	st := openTestStore(t)
+	st.UpsertSession(model.Session{ID: "sess-1", CWD: "/tmp", CreatedAt: time.Now()})
+	st.UpsertSession(model.Session{ID: "sess-2", CWD: "/tmp", CreatedAt: time.Now()})
+
+	st.SaveSummary("sess-1", "Old summary.", "m")
+	st.SaveSummary("sess-2", "New summary.", "m")
+
+	// Set since to a moment just before "now" — both summaries are essentially "now",
+	// so we query all and verify the filter mechanism works with a future cutoff.
+	future := time.Now().Add(1 * time.Hour)
+	tf := &model.TimeFilter{Since: &future}
+
+	results, err := st.ListSummaries(10, tf)
+	if err != nil {
+		t.Fatalf("list summaries: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 summaries after future cutoff, got %d", len(results))
+	}
+}
+
+func TestListSummaries_WhenUntilFilterSet_ShouldExcludeNewerSummaries(t *testing.T) {
+	st := openTestStore(t)
+	st.UpsertSession(model.Session{ID: "sess-1", CWD: "/tmp", CreatedAt: time.Now()})
+
+	st.SaveSummary("sess-1", "A summary.", "m")
+
+	past := time.Now().Add(-1 * time.Hour)
+	tf := &model.TimeFilter{Until: &past}
+
+	results, err := st.ListSummaries(10, tf)
+	if err != nil {
+		t.Fatalf("list summaries: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 summaries before past cutoff, got %d", len(results))
+	}
+}
+
 // --- helpers ---
 
 func TestNullStr_WhenGivenEmptyString_ShouldReturnNil(t *testing.T) {

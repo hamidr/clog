@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"clog/internal/model"
 
@@ -327,6 +328,78 @@ func (s *Store) ToolSearch(toolName string, limit int, tf *model.TimeFilter) ([]
 		}
 		if toolResponse.Valid {
 			r.ToolResponse = toolResponse.String
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// --- Session message retrieval ---
+
+// SessionMessages returns messages for a session in chronological order.
+func (s *Store) SessionMessages(sessionID string, limit int) ([]model.StoredMessage, error) {
+	rows, err := s.db.Query(`
+		SELECT id, session_id, role, content, timestamp
+		FROM messages
+		WHERE session_id = ? AND content IS NOT NULL AND content != ''
+		ORDER BY timestamp ASC
+		LIMIT ?
+	`, sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []model.StoredMessage
+	for rows.Next() {
+		var m model.StoredMessage
+		if err := rows.Scan(&m.ID, &m.SessionID, &m.Role, &m.Content, &m.Timestamp); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// --- Summary operations ---
+
+// SaveSummary persists or updates a session summary.
+func (s *Store) SaveSummary(sessionID, summary, modelName string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO session_summaries (session_id, summary, model, generated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT (session_id) DO UPDATE
+		SET summary = excluded.summary, model = excluded.model, generated_at = excluded.generated_at
+	`, sessionID, summary, modelName, time.Now().UTC())
+	return err
+}
+
+// ListSummaries returns session summaries ordered by generation time.
+func (s *Store) ListSummaries(limit int, tf *model.TimeFilter) ([]model.SummaryResult, error) {
+	params := []interface{}{}
+	timeClause, params := appendTimeClauses(tf, "ss.generated_at", false, params)
+
+	query := fmt.Sprintf(`
+		SELECT ss.session_id, ss.summary, ss.model, ss.generated_at, s.cwd
+		FROM session_summaries ss
+		JOIN sessions s ON ss.session_id = s.session_id
+		%s
+		ORDER BY ss.generated_at DESC
+		LIMIT ?
+	`, timeClause)
+
+	params = append(params, limit)
+	rows, err := s.db.Query(query, params...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []model.SummaryResult
+	for rows.Next() {
+		var r model.SummaryResult
+		if err := rows.Scan(&r.SessionID, &r.Summary, &r.Model, &r.GeneratedAt, &r.CWD); err != nil {
+			return nil, err
 		}
 		out = append(out, r)
 	}

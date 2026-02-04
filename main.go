@@ -11,6 +11,7 @@ import (
 	"clog/internal/embedding"
 	"clog/internal/model"
 	"clog/internal/store"
+	"clog/internal/summary"
 	"clog/internal/transcript"
 )
 
@@ -29,6 +30,7 @@ func main() {
 	commandsLong := flag.String("commands", "", "search tool call events by tool name")
 	verbose := flag.Bool("v", false, "")
 	verboseLong := flag.Bool("verbose", false, "show tool responses (use with -c)")
+	changelog := flag.Bool("changelog", false, "list session summaries")
 	n := flag.Int("n", 0, "max results or messages")
 	since := flag.String("since", "", "filter results after this time (e.g. 1h, 2d, 1w, 2024-01-15)")
 	until := flag.String("until", "", "filter results before this time (e.g. 1h, 2d, 1w, 2024-01-15)")
@@ -44,10 +46,11 @@ options:
   -s, --search QUERY         semantic search over embeddings
   -t, --text-search PATTERN  case-insensitive substring search
   -c, --commands PATTERN     search tool call events (use "*" for all)
+  --changelog                list session summaries
   -v, --verbose              show tool responses (use with -c)
   -n NUM                     max results/messages (default: varies per mode)
-  --since TIME               filter results after TIME (use with -s, -t, -c)
-  --until TIME               filter results before TIME (use with -s, -t, -c)
+  --since TIME               filter results after TIME (use with -s, -t, -c, --changelog)
+  --until TIME               filter results before TIME (use with -s, -t, -c, --changelog)
 
   TIME can be a relative duration (30m, 2h, 1d, 1w) or a timestamp
   (2024-01-15, 2024-01-15T14:30, or full RFC3339).
@@ -55,6 +58,7 @@ options:
 environment:
   OLLAMA_EMBED_MODEL   local Ollama model (checked first)
   OLLAMA_HOST          Ollama address (usually http://localhost:11434)
+  OLLAMA_CHAT_MODEL    Ollama model for session summaries (e.g. llama3.2)
   VOYAGE_API_KEY       Voyage AI API key
   OPENAI_API_KEY       OpenAI API key
 `)
@@ -104,13 +108,16 @@ environment:
 	if *commands != "" {
 		mode++
 	}
+	if *changelog {
+		mode++
+	}
 
 	if mode == 0 {
 		flag.Usage()
 		os.Exit(2)
 	}
 	if mode > 1 {
-		fmt.Fprintln(os.Stderr, "clog: specify only one of -i, -e, -s, -t, -c")
+		fmt.Fprintln(os.Stderr, "clog: specify only one of -i, -e, -s, -t, -c, --changelog")
 		os.Exit(2)
 	}
 
@@ -140,6 +147,11 @@ environment:
 			*n = 20
 		}
 		err = runToolSearch(*commands, *n, *verbose, tf)
+	case *changelog:
+		if *n == 0 {
+			*n = 20
+		}
+		err = runChangelog(*n, tf)
 	}
 
 	if err != nil {
@@ -190,6 +202,7 @@ func runHook() error {
 		if err := harvestMessages(st, parsed.Session.ID, parsed.Session.TranscriptPath); err != nil {
 			fmt.Fprintf(os.Stderr, "clog: harvest: %v\n", err)
 		}
+		generateSummary(st, parsed.Session.ID)
 	}
 
 	return nil
@@ -211,6 +224,73 @@ func harvestMessages(st *store.Store, sessionID, transcriptPath string) error {
 	}
 
 	return st.SaveHarvestedMessages(result.Messages, transcriptPath, result.NewOffset)
+}
+
+func generateSummary(st *store.Store, sessionID string) {
+	summarizer, err := summary.NewFromEnv()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "clog: summary provider: %v\n", err)
+		return
+	}
+	if summarizer == nil {
+		return
+	}
+
+	messages, err := st.SessionMessages(sessionID, 100)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "clog: summary messages: %v\n", err)
+		return
+	}
+	if len(messages) < 2 {
+		return
+	}
+
+	text, err := summarizer.Summarize(messages)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "clog: summarize: %v\n", err)
+		return
+	}
+
+	if err := st.SaveSummary(sessionID, text, summarizer.Model()); err != nil {
+		fmt.Fprintf(os.Stderr, "clog: save summary: %v\n", err)
+	}
+}
+
+// --- Changelog mode ---
+
+func runChangelog(limit int, tf *model.TimeFilter) error {
+	st, err := openCurrentProjectStore()
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	// Ensure the session_summaries table exists (may be missing on older DBs).
+	if err := st.InitCoreSchema(); err != nil {
+		return err
+	}
+
+	results, err := st.ListSummaries(limit, tf)
+	if err != nil {
+		return fmt.Errorf("list summaries: %w", err)
+	}
+
+	if len(results) == 0 {
+		fmt.Println("No session summaries found.")
+		return nil
+	}
+
+	for i, r := range results {
+		sessionPrefix := r.SessionID
+		if len(sessionPrefix) > 8 {
+			sessionPrefix = sessionPrefix[:8]
+		}
+		fmt.Printf("[%d] %s  session=%s\n",
+			i+1, r.GeneratedAt.Format("2006-01-02 15:04"), sessionPrefix)
+		fmt.Printf("    dir: %s\n", r.CWD)
+		fmt.Printf("    %s\n\n", r.Summary)
+	}
+	return nil
 }
 
 // --- Embed mode ---
