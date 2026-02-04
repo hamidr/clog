@@ -206,18 +206,23 @@ func (s *Store) SaveEmbedding(messageID int64, embedding []float32) error {
 }
 
 // SearchSimilar finds the top-k messages most similar to the given embedding.
-func (s *Store) SearchSimilar(embedding []float32, limit int) ([]model.SearchResult, error) {
+func (s *Store) SearchSimilar(embedding []float32, limit int, tf *model.TimeFilter) ([]model.SearchResult, error) {
+	params := []interface{}{}
+	timeClause, params := appendTimeClauses(tf, "m.timestamp", false, params)
+
 	query := fmt.Sprintf(`
 		SELECT m.id, m.session_id, m.role, m.content,
 		       array_cosine_similarity(e.embedding, %s::FLOAT[%d]) AS score,
 		       m.timestamp
 		FROM messages m
 		JOIN message_embeddings e ON m.id = e.message_id
+		%s
 		ORDER BY score DESC
 		LIMIT ?
-	`, formatFloatArray(embedding), len(embedding))
+	`, formatFloatArray(embedding), len(embedding), timeClause)
 
-	rows, err := s.db.Query(query, limit)
+	params = append(params, limit)
+	rows, err := s.db.Query(query, params...)
 	if err != nil {
 		return nil, err
 	}
@@ -235,14 +240,21 @@ func (s *Store) SearchSimilar(embedding []float32, limit int) ([]model.SearchRes
 }
 
 // TextSearch performs a case-insensitive text search across messages.
-func (s *Store) TextSearch(pattern string, limit int) ([]model.SearchResult, error) {
-	rows, err := s.db.Query(`
+func (s *Store) TextSearch(pattern string, limit int, tf *model.TimeFilter) ([]model.SearchResult, error) {
+	params := []interface{}{"%"+pattern+"%"}
+	timeClause, params := appendTimeClauses(tf, "m.timestamp", true, params)
+
+	query := fmt.Sprintf(`
 		SELECT m.id, m.session_id, m.role, m.content, 0.0 AS score, m.timestamp
 		FROM messages m
 		WHERE m.content ILIKE ?
+		%s
 		ORDER BY m.timestamp DESC
 		LIMIT ?
-	`, "%"+pattern+"%", limit)
+	`, timeClause)
+
+	params = append(params, limit)
+	rows, err := s.db.Query(query, params...)
 	if err != nil {
 		return nil, err
 	}
@@ -262,31 +274,42 @@ func (s *Store) TextSearch(pattern string, limit int) ([]model.SearchResult, err
 // --- Tool search ---
 
 // ToolSearch queries PostToolUse events, optionally filtered by tool name.
-func (s *Store) ToolSearch(toolName string, limit int) ([]model.ToolResult, error) {
-	var rows *sql.Rows
-	var err error
+func (s *Store) ToolSearch(toolName string, limit int, tf *model.TimeFilter) ([]model.ToolResult, error) {
+	var query string
+	var params []interface{}
 
 	if toolName == "" || toolName == "*" {
-		rows, err = s.db.Query(`
+		params = []interface{}{}
+		timeClause, p := appendTimeClauses(tf, "timestamp", true, params)
+		params = p
+		query = fmt.Sprintf(`
 			SELECT session_id, tool_name, CAST(tool_input AS VARCHAR),
 			       CAST(tool_response AS VARCHAR), timestamp
 			FROM events
 			WHERE event_type = 'PostToolUse'
 			  AND tool_name IS NOT NULL
+			%s
 			ORDER BY timestamp DESC
 			LIMIT ?
-		`, limit)
+		`, timeClause)
 	} else {
-		rows, err = s.db.Query(`
+		params = []interface{}{toolName}
+		timeClause, p := appendTimeClauses(tf, "timestamp", true, params)
+		params = p
+		query = fmt.Sprintf(`
 			SELECT session_id, tool_name, CAST(tool_input AS VARCHAR),
 			       CAST(tool_response AS VARCHAR), timestamp
 			FROM events
 			WHERE event_type = 'PostToolUse'
-			  AND tool_name ILIKE '%' || ? || '%'
+			  AND tool_name ILIKE '%%' || ? || '%%'
+			%s
 			ORDER BY timestamp DESC
 			LIMIT ?
-		`, toolName, limit)
+		`, timeClause)
 	}
+
+	params = append(params, limit)
+	rows, err := s.db.Query(query, params...)
 	if err != nil {
 		return nil, err
 	}
@@ -311,6 +334,39 @@ func (s *Store) ToolSearch(toolName string, limit int) ([]model.ToolResult, erro
 }
 
 // --- helpers ---
+
+// appendTimeClauses builds SQL fragments for time filtering.
+// If hasWhere is true, clauses use "AND"; otherwise the first clause uses "WHERE".
+func appendTimeClauses(tf *model.TimeFilter, tsCol string, hasWhere bool, params []interface{}) (string, []interface{}) {
+	if tf == nil {
+		return "", params
+	}
+
+	var clauses []string
+	if tf.Since != nil {
+		clauses = append(clauses, fmt.Sprintf("%s >= ?", tsCol))
+		params = append(params, *tf.Since)
+	}
+	if tf.Until != nil {
+		clauses = append(clauses, fmt.Sprintf("%s <= ?", tsCol))
+		params = append(params, *tf.Until)
+	}
+
+	if len(clauses) == 0 {
+		return "", params
+	}
+
+	var sb strings.Builder
+	for i, c := range clauses {
+		if i == 0 && !hasWhere {
+			sb.WriteString(" WHERE ")
+		} else {
+			sb.WriteString(" AND ")
+		}
+		sb.WriteString(c)
+	}
+	return sb.String(), params
+}
 
 func nullStr(s string) interface{} {
 	if s == "" {

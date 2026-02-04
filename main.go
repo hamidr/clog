@@ -30,6 +30,8 @@ func main() {
 	verbose := flag.Bool("v", false, "")
 	verboseLong := flag.Bool("verbose", false, "show tool responses (use with -c)")
 	n := flag.Int("n", 0, "max results or messages")
+	since := flag.String("since", "", "filter results after this time (e.g. 1h, 2d, 1w, 2024-01-15)")
+	until := flag.String("until", "", "filter results before this time (e.g. 1h, 2d, 1w, 2024-01-15)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `clog - Claude Code session logger with search
@@ -44,6 +46,11 @@ options:
   -c, --commands PATTERN     search tool call events (use "*" for all)
   -v, --verbose              show tool responses (use with -c)
   -n NUM                     max results/messages (default: varies per mode)
+  --since TIME               filter results after TIME (use with -s, -t, -c)
+  --until TIME               filter results before TIME (use with -s, -t, -c)
+
+  TIME can be a relative duration (30m, 2h, 1d, 1w) or a timestamp
+  (2024-01-15, 2024-01-15T14:30, or full RFC3339).
 
 environment:
   OLLAMA_EMBED_MODEL   local Ollama model (checked first)
@@ -75,6 +82,12 @@ environment:
 		*verbose = true
 	}
 
+	tf, err := model.ParseTimeFilter(*since, *until)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "clog: %v\n", err)
+		os.Exit(2)
+	}
+
 	mode := 0
 	if *ingest {
 		mode++
@@ -101,7 +114,6 @@ environment:
 		os.Exit(2)
 	}
 
-	var err error
 	switch {
 	case *ingest:
 		if err := runHook(); err != nil {
@@ -117,17 +129,17 @@ environment:
 		if *n == 0 {
 			*n = 10
 		}
-		err = runSearch(*search, *n)
+		err = runSearch(*search, *n, tf)
 	case *text != "":
 		if *n == 0 {
 			*n = 20
 		}
-		err = runTextSearch(*text, *n)
+		err = runTextSearch(*text, *n, tf)
 	case *commands != "":
 		if *n == 0 {
 			*n = 20
 		}
-		err = runToolSearch(*commands, *n, *verbose)
+		err = runToolSearch(*commands, *n, *verbose, tf)
 	}
 
 	if err != nil {
@@ -263,7 +275,7 @@ func runEmbed(limit int) error {
 
 // --- Search mode (semantic) ---
 
-func runSearch(query string, limit int) error {
+func runSearch(query string, limit int, tf *model.TimeFilter) error {
 	st, err := openCurrentProjectStore()
 	if err != nil {
 		return err
@@ -284,7 +296,7 @@ func runSearch(query string, limit int) error {
 		return fmt.Errorf("embed query: %w", err)
 	}
 
-	results, err := st.SearchSimilar(vecs[0], limit)
+	results, err := st.SearchSimilar(vecs[0], limit, tf)
 	if err != nil {
 		return fmt.Errorf("search: %w", err)
 	}
@@ -300,14 +312,14 @@ func runSearch(query string, limit int) error {
 
 // --- Text search mode (ILIKE, no embeddings needed) ---
 
-func runTextSearch(pattern string, limit int) error {
+func runTextSearch(pattern string, limit int, tf *model.TimeFilter) error {
 	st, err := openCurrentProjectStore()
 	if err != nil {
 		return err
 	}
 	defer st.Close()
 
-	results, err := st.TextSearch(pattern, limit)
+	results, err := st.TextSearch(pattern, limit, tf)
 	if err != nil {
 		return fmt.Errorf("text search: %w", err)
 	}
@@ -323,14 +335,14 @@ func runTextSearch(pattern string, limit int) error {
 
 // --- Tool search mode ---
 
-func runToolSearch(pattern string, limit int, verbose bool) error {
+func runToolSearch(pattern string, limit int, verbose bool, tf *model.TimeFilter) error {
 	st, err := openCurrentProjectStore()
 	if err != nil {
 		return err
 	}
 	defer st.Close()
 
-	results, err := st.ToolSearch(pattern, limit)
+	results, err := st.ToolSearch(pattern, limit, tf)
 	if err != nil {
 		return fmt.Errorf("tool search: %w", err)
 	}

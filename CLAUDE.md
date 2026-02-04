@@ -41,6 +41,13 @@ clog --text-search "pattern" -n 10
 clog -c "bash"
 clog --commands "*" -n 10
 clog -c "bash" -v              # include tool responses
+
+# Time-bounded search (works with -s, -t, -c)
+clog -t "auth" --since 1d                              # last 24 hours
+clog -s "build errors" --since 1w                      # last week
+clog -c "bash" --since 2h                              # last 2 hours
+clog -t "deploy" --since 2024-01-01 --until 2024-01-31 # date range
+# --since/--until accept: 30m, 2h, 1d, 1w, 2024-01-15, 2024-01-15T14:30, RFC3339
 ```
 
 There are no tests in the codebase currently.
